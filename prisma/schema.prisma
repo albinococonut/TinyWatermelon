@@ -1,0 +1,548 @@
+// Watermelon — HIPAA-eligible data model.
+//
+// Design principles:
+//  - Every PHI-bearing table has organizationId — multi-tenant row isolation.
+//  - Soft delete via deletedAt (HIPAA retention + audit-trail friendly).
+//  - Magic-link auth (Account/Session/VerificationToken are NextAuth-required).
+//  - AuditLog records every PHI read or write — required by §164.312(b).
+//  - SQLite for local dev; same schema runs unchanged on Neon Postgres in prod.
+
+generator client {
+  provider      = "prisma-client-js"
+  // native = local dev. rhel-openssl-3.0.x = Vercel/AWS Lambda runtime.
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AUTH (NextAuth-required + our extensions)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  emailVerified DateTime?
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  lastSeenAt    DateTime?
+
+  // MFA — TOTP secret stored encrypted at the application layer (see lib/mfa.ts).
+  // null = MFA not yet enrolled. Required for ADMIN/OWNER roles before granting access.
+  mfaSecretEnc  String?
+  mfaEnrolledAt DateTime?
+
+  accounts     Account[]
+  sessions     Session[]
+  memberships  Membership[]
+  auditLogs    AuditLog[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  // HIPAA-relevant: track IP/UA for audit (15-min idle timeout enforced in code)
+  ipAddress    String?
+  userAgent    String?
+  // Per-session MFA verification — separate from MFA enrollment.
+  // Set on TOTP verify; null on every new sign-in. requireSession() checks
+  // this for OWNER/ADMIN to enforce one TOTP entry per session.
+  mfaVerifiedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// Invite tokens — admin generates, recipient claims to join org with a role.
+// No email required; admin pastes the link into any channel.
+model InviteToken {
+  id             String   @id @default(cuid())
+  organizationId String
+  createdByUserId String
+  role           String   // role the invited person will receive on acceptance
+  token          String   @unique @default(cuid())
+  note           String?  // optional label ("for Sarah, coordinator")
+  claimedByUserId String?
+  claimedAt      DateTime?
+  expiresAt      DateTime // 72-hour default
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([token])
+}
+
+model VerificationToken {
+  identifier String   // email
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TENANT
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Organization {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique  // url-safe identifier, e.g. "includ-ed"
+  baseAddress String?  // primary location, e.g. "4761 Cass St, San Diego, CA 92109"
+  // org-level config
+  smartOffersEnabled       Boolean @default(true)
+  smartOfferDelayMin       Int     @default(5)
+  lastMinuteTriggerHours   Int     @default(3)
+  maxOfferRecipients       Int     @default(8)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+
+  memberships  Membership[]
+  providers    Provider[]
+  families     Family[]
+  children     Child[]
+  billingTypes BillingType[]
+  inviteTokens InviteToken[]
+  appointments Appointment[]
+  smartOffers  SmartOffer[]
+  smsThreads   SmsThread[]
+  rateSettings RateSetting[]
+  serviceTypes ServiceType[]
+  auditLogs    AuditLog[]
+  recovered    RecoveredRevenueEvent[]
+  lost         LostRevenueEvent[]
+}
+
+// NOTE: stored as String for SQLite-dev compatibility.
+// Runtime validation in lib/types.ts. On Postgres prod we'll convert to
+// native enums via a migration. Valid values: see Role enum in lib/types.ts.
+
+model Membership {
+  id             String   @id @default(cuid())
+  userId         String
+  organizationId String
+  role           String   // "OWNER" | "ADMIN" | "COORDINATOR" | "PROVIDER" | "READ_ONLY"
+  invitedAt      DateTime  @default(now())
+  acceptedAt     DateTime?
+  revokedAt      DateTime?
+  // when role is PROVIDER, this membership links to the actual Provider record
+  providerId     String?  @unique
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  provider     Provider?    @relation(fields: [providerId], references: [id])
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CORE OPERATIONAL DATA
+// ─────────────────────────────────────────────────────────────────────────────
+
+// String values: "OT" | "PT" | "SLP" | "MT" | "ABA"
+
+model Provider {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  credentials    String?
+  title          String?
+  discipline     String
+  bilingual      Boolean  @default(false)
+  bufferMinutes  Int      @default(15)
+  weeklyTargetHours Int   @default(28)
+  // optional override — defaults to org.baseAddress when null
+  startAddress   String?
+  startLat       Float?
+  startLng       Float?
+  avatarHue      Int?
+  // When set, overrides the org-level discipline rate for revenue calculations
+  billingRatePerHour Float?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  appointments Appointment[]
+  smartOffers  SmartOffer[]
+  membership   Membership?
+
+  @@index([organizationId])
+  @@index([organizationId, discipline])
+}
+
+// Org-level discipline/service type management.
+// code matches the Discipline type ("OT"|"PT"|"SLP"|"MT"|"ABA" or custom).
+// Admins can rename, hide, or add new disciplines per org.
+model ServiceType {
+  id             String   @id @default(cuid())
+  organizationId String
+  code           String   // internal key, e.g. "OT"
+  label          String   // display name, e.g. "Occupational Therapy"
+  nickname       String?  // 2-3 char abbreviation, e.g. "OT"
+  active         Boolean  @default(true)
+  sortOrder      Int      @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, code])
+  @@index([organizationId])
+}
+
+model BillingType {
+  id             String   @id @default(cuid())
+  organizationId String
+  label          String   // "Private Pay", "Private Pay with Travel", "San Diego Regional Center"
+  defaultRatePerHour Float?
+  includesTravel Boolean  @default(false)
+  active         Boolean  @default(true)
+  color          String?  @default("#6B7280")
+  sortOrder      Int      @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  families     Family[]
+
+  @@index([organizationId])
+}
+
+model Family {
+  id             String   @id @default(cuid())
+  organizationId String
+  // The magic-link target. Phone for SMS, email for email fallback.
+  primaryContactName  String
+  primaryContactPhone String
+  primaryContactEmail String?
+  secondaryContactName  String?
+  secondaryContactPhone String?
+  // Address details
+  homeAddress     String?
+  homeNeighborhood String?
+  homeCity        String?
+  homeZip         String?
+  homeLat         Float?
+  homeLng         Float?
+  preferredLocation String? // "school" | "home" | "other"
+  otherAddress    String?
+  travelNotes     String?
+  // SMS opt-in preferences (default true = opted in)
+  primaryContactOptIn   Boolean @default(true)
+  secondaryContactOptIn Boolean @default(true)
+  // Billing
+  billingTypeId   String?
+  customRatePerHour Float? // overrides BillingType.defaultRatePerHour when set
+  travelRatePerMile Float? // $/mile for travel-billing families
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  organization  Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  billingType   BillingType?       @relation(fields: [billingTypeId], references: [id])
+  children      Child[]
+  smsThreads    SmsThread[]
+  rateOverrides FamilyRateOverride[]
+
+  @@index([organizationId])
+  @@index([billingTypeId])
+}
+
+model Child {
+  id             String   @id @default(cuid())
+  organizationId String
+  familyId       String
+  firstName      String
+  lastName       String
+  ageYears       Int
+  birthDate      DateTime?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  organization        Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  family              Family               @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  authorizedServices  AuthorizedService[]
+  appointments        Appointment[]
+  smsThreads          SmsThread[]
+  lostRevenueEvents   LostRevenueEvent[]
+
+  @@index([organizationId])
+  @@index([familyId])
+}
+
+// Per-discipline monthly authorization bucket — e.g. 5h OT/month.
+// Resets at the start of each calendar month.
+model AuthorizedService {
+  id             String   @id @default(cuid())
+  childId        String
+  discipline     String
+  monthlyHours   Int
+  // optional: when this auth expires (separate from the monthly reset cycle)
+  expiresAt      DateTime?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  child Child @relation(fields: [childId], references: [id], onDelete: Cascade)
+
+  @@unique([childId, discipline])
+  @@index([childId])
+}
+
+// Per-discipline billing rate override for a specific family.
+// Takes precedence over BillingType.defaultRatePerHour for that discipline.
+model FamilyRateOverride {
+  id          String  @id @default(cuid())
+  familyId    String
+  discipline  String  // "OT" | "PT" | "SLP" | "MT" | "ABA"
+  ratePerHour Float
+
+  family Family @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  @@unique([familyId, discipline])
+  @@index([familyId])
+}
+
+// Parent-availability windows (when the child can be seen).
+model ParentAvailability {
+  id             String  @id @default(cuid())
+  childId        String
+  dayOfWeek      Int     // 0 = Sun … 6 = Sat
+  startMinutes   Int     // minutes from midnight
+  endMinutes     Int
+
+  @@index([childId])
+}
+
+
+
+
+
+model Appointment {
+  id             String   @id @default(cuid())
+  organizationId String
+  providerId     String
+  childId        String?  // null while in the recovery queue as an open slot
+  discipline     String
+  startsAt       DateTime
+  endsAt         DateTime
+  locationType   String   // "school" | "home" | "other"
+  locationAddress String?
+  locationLat    Float?
+  locationLng    Float?
+  status         String
+  cancellationReason String?
+  cancelledAt    DateTime?
+  cancelledBy    String? // "family" | "provider" | "system"
+  // Linkage for makeups
+  replacesAppointmentId  String? // a filled_makeup that replaces an earlier cancellation
+  filledByAppointmentId  String? // the cancellation that's been backfilled
+  notes          String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  provider     Provider     @relation(fields: [providerId], references: [id])
+  child        Child?       @relation(fields: [childId], references: [id])
+  smartOffers  SmartOffer[]
+
+  @@index([organizationId, startsAt])
+  @@index([organizationId, status])
+  @@index([providerId, startsAt])
+  @@index([childId, startsAt])
+}
+
+// A Smart Family Offer — mass-text to eligible families when a slot opens.
+// First confirmation books the opening.
+
+
+
+
+model SmartOffer {
+  id             String   @id @default(cuid())
+  organizationId String
+  appointmentId  String   // the open_slot being offered
+  providerId     String
+  discipline     String
+  mode           String @default("STANDARD")
+  status         String @default("LIVE")
+  sentAt         DateTime @default(now())
+  claimedByChildId String?
+  claimedAt      DateTime?
+
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  appointment  Appointment         @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  provider     Provider            @relation(fields: [providerId], references: [id])
+  recipients   SmartOfferRecipient[]
+
+  @@index([organizationId, sentAt])
+  @@index([appointmentId])
+}
+
+
+
+model SmartOfferRecipient {
+  id             String   @id @default(cuid())
+  smartOfferId   String
+  childId        String
+  familyId       String
+  status         String @default("SENT")
+  smsThreadId    String?
+
+  smartOffer SmartOffer @relation(fields: [smartOfferId], references: [id], onDelete: Cascade)
+
+  @@index([smartOfferId])
+  @@index([childId])
+}
+
+// SMS conversation history.
+// IMPORTANT: outbound message bodies must be PHI-free (see lib/sms.ts).
+model SmsThread {
+  id             String   @id @default(cuid())
+  organizationId String
+  familyId       String
+  childId        String?  // optional — coordinator-visible context only
+  topic          String   // INTERNAL — visible in coordinator UI, may include identifying detail
+  status         String   // "awaiting_reply" | "accepted" | "declined" | "resolved"
+  lastUpdatedAt  DateTime @default(now())
+  lastAdminReadAt DateTime? // when coordinator last viewed this thread
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  family       Family       @relation(fields: [familyId], references: [id])
+  child        Child?       @relation(fields: [childId], references: [id])
+  messages     Message[]
+
+  @@index([organizationId, lastUpdatedAt])
+}
+
+
+
+model Message {
+  id           String   @id @default(cuid())
+  threadId     String
+  direction    String
+  body         String   // outbound bodies are PHI-free by policy; inbound is whatever the family sends
+  sentAt       DateTime @default(now())
+  // Twilio metadata (provider message id, delivery status, etc.)
+  externalId   String?
+  deliveredAt  DateTime?
+  failedAt     DateTime?
+  failReason   String?
+
+  thread SmsThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@index([threadId, sentAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REVENUE
+// ─────────────────────────────────────────────────────────────────────────────
+
+model RateSetting {
+  id             String   @id @default(cuid())
+  organizationId String
+  discipline     String
+  gpPerHour      Float    // gross profit per service hour, USD
+
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, discipline])
+}
+
+model RecoveredRevenueEvent {
+  id             String   @id @default(cuid())
+  organizationId String
+  appointmentId  String   // the filled_makeup appointment
+  childId        String?
+  amount         Float
+  occurredAt     DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, occurredAt])
+}
+
+
+
+model LostRevenueEvent {
+  id             String   @id @default(cuid())
+  organizationId String
+  childId        String?
+  discipline     String
+  hours          Float
+  reason         String
+  occurredAt     DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  child        Child?       @relation(fields: [childId], references: [id])
+
+  @@index([organizationId, occurredAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AUDIT — required by HIPAA §164.312(b)
+// Retained 6 years (HIPAA floor). Append-only; never updated/deleted in code.
+// ─────────────────────────────────────────────────────────────────────────────
+
+
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String?
+  userId         String?
+  action         String
+  resourceType   String   // e.g. "Child", "Appointment", "SmsThread"
+  resourceId     String?
+  meta           String?  // JSON-encoded extra context (kept minimal — no PHI)
+  ipAddress      String?
+  userAgent      String?
+  occurredAt     DateTime @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id])
+  user         User?         @relation(fields: [userId], references: [id])
+
+  @@index([organizationId, occurredAt])
+  @@index([userId, occurredAt])
+  @@index([resourceType, resourceId])
+}
