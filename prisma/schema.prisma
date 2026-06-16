@@ -121,6 +121,12 @@ model Organization {
   lastMinuteTriggerHours   Int     @default(3)
   maxOfferRecipients       Int     @default(8)
 
+  // BAA — must be signed before PHI can be entered (see /baa-accept).
+  baaSignedAt       DateTime?
+  baaSignedByUserId String?
+  baaSignedIp       String?
+  baaVersion        String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   deletedAt DateTime?

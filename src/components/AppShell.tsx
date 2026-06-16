@@ -130,6 +130,10 @@ function AppShellInner({
           <div className="mt-3 rounded-lg bg-seed-50 px-2.5 py-2 text-[11px] text-seed-500">
             <span className="font-semibold text-rind-600">HIPAA-compliant</span> · audit logged
           </div>
+          <div className="mt-2 flex gap-3 text-[11px] text-seed-400">
+            <Link href="/privacy" className="hover:text-seed-600">Privacy Policy</Link>
+            <Link href="/terms" className="hover:text-seed-600">Terms</Link>
+          </div>
         </div>
       </aside>
 

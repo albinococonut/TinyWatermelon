@@ -48,7 +48,7 @@ export async function requireSession(opts?: {
         organizationId: true,
         role: true,
         providerId: true,
-        organization: { select: { name: true } },
+        organization: { select: { name: true, baaSignedAt: true } },
       },
       orderBy: { invitedAt: "desc" },
     }),
@@ -65,8 +65,13 @@ export async function requireSession(opts?: {
     redirect("/marketplace?denied=1");
   }
 
-  // Demo account bypasses MFA — checked against DB email, not session JWT.
+  // Demo account bypasses MFA and BAA — checked against DB email, not session JWT.
   const isDemo = user?.email === "owner@watermelon-therapy.example.com";
+
+  // BAA gate — org must have signed the BAA before accessing PHI.
+  if (!isDemo && !membership.organization?.baaSignedAt) {
+    redirect("/baa-accept");
+  }
 
   if (!isDemo && MFA_REQUIRED_ROLES.has(role)) {
     if (!user?.mfaEnrolledAt) redirect("/mfa-setup");

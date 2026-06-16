@@ -110,6 +110,7 @@ export const AUDIT_ACTIONS = [
   "SEND_SMS",
   "SEND_EMAIL",
   "CANCEL_APPOINTMENT",
+  "BAA_ACCEPTED",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
