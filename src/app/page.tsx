@@ -63,9 +63,12 @@ export default function LandingPage() {
         />
       </div>
 
-      <p className="mt-16 text-[12.5px] text-seed-400">
-        © {new Date().getFullYear()} Watermelon. For provider organizations only.
-      </p>
+      <div className="mt-16 flex flex-wrap items-center justify-center gap-4 text-[12.5px] text-seed-400">
+        <span>© {new Date().getFullYear()} Tiny Watermelon, LLC</span>
+        <Link href="/privacy" className="hover:text-seed-600">Privacy Policy</Link>
+        <Link href="/terms" className="hover:text-seed-600">Terms of Service</Link>
+        <a href="mailto:hi@tinywatermelon.com" className="hover:text-seed-600">hi@tinywatermelon.com</a>
+      </div>
     </main>
   );
 }

@@ -91,15 +91,16 @@ export default async function LoginPage({
               {decodeError(errorCode)}
             </p>
           )}
-          <p className="text-center text-[11.5px] text-seed-500">
-            🔒 In dev, magic links print to your terminal — check the console.
-          </p>
         </form>
       </div>
 
       <Link href="/" className="mt-8 text-[13px] font-medium text-seed-500 hover:text-seed-700">
         ← Back to home
       </Link>
+      <div className="mt-4 flex gap-4 text-[11.5px] text-seed-400">
+        <Link href="/privacy" className="hover:text-seed-600">Privacy Policy</Link>
+        <Link href="/terms" className="hover:text-seed-600">Terms of Service</Link>
+      </div>
     </main>
   );
 }
