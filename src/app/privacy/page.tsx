@@ -28,7 +28,7 @@ export default function PrivacyPage() {
 
           <DocSection title="1. Company Information">
             <p>Tiny Watermelon, LLC<br />13307 Cedarbrook Ave NE<br />Albuquerque, NM 87111</p>
-            <p className="mt-2">Email: tinywatermelontherapy@gmail.com<br />Website: https://tinywatermelon.com</p>
+            <p className="mt-2">Email: hi@tinywatermelon.com<br />Website: https://tinywatermelon.com</p>
           </DocSection>
 
           <DocSection title="2. Scope">
@@ -120,7 +120,7 @@ export default function PrivacyPage() {
           </DocSection>
 
           <DocSection title="18. Contact Information">
-            <p>Privacy questions: tinywatermelontherapy@gmail.com<br />Tiny Watermelon, LLC<br />13307 Cedarbrook Ave NE<br />Albuquerque, NM 87111</p>
+            <p>Privacy questions: hi@tinywatermelon.com<br />Tiny Watermelon, LLC<br />13307 Cedarbrook Ave NE<br />Albuquerque, NM 87111</p>
           </DocSection>
         </div>
       </main>

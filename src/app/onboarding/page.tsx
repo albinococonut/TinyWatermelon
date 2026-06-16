@@ -30,7 +30,7 @@ export default async function OnboardingPage() {
           contact us to set up a new account for your practice.
         </p>
         <a
-          href="mailto:hello@watermelon.app"
+          href="mailto:hi@tinywatermelon.com"
           className="bg-melon-button mt-6 inline-flex rounded-xl px-4 py-2.5 text-[14px] font-semibold text-white shadow-lift"
         >
           Contact us

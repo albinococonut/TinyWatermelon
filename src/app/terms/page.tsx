@@ -27,7 +27,7 @@ export default function TermsPage() {
           </p>
 
           <DocSection title="1. Company Information">
-            <p>Tiny Watermelon, LLC<br />13307 Cedarbrook Ave NE<br />Albuquerque, NM 87111<br />Email: tinywatermelontherapy@gmail.com<br />Website: tinywatermelon.com</p>
+            <p>Tiny Watermelon, LLC<br />13307 Cedarbrook Ave NE<br />Albuquerque, NM 87111<br />Email: hi@tinywatermelon.com<br />Website: tinywatermelon.com</p>
           </DocSection>
 
           <DocSection title="2. Services">
@@ -111,7 +111,7 @@ export default function TermsPage() {
           </DocSection>
 
           <DocSection title="22. Contact">
-            <p>Questions regarding these Terms may be directed to:<br />Tiny Watermelon, LLC<br />tinywatermelontherapy@gmail.com<br />13307 Cedarbrook Ave NE<br />Albuquerque, NM 87111</p>
+            <p>Questions regarding these Terms may be directed to:<br />Tiny Watermelon, LLC<br />hi@tinywatermelon.com<br />13307 Cedarbrook Ave NE<br />Albuquerque, NM 87111</p>
           </DocSection>
         </div>
       </main>
